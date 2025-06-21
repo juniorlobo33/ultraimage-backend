@@ -1,9 +1,0 @@
-Flask
-Flask-Cors
-Flask-SQLAlchemy
-Werkzeug
-requests
-Pillow
-gunicorn
-replicate
-python-dotenv
