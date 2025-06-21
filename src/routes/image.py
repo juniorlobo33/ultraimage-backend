@@ -1,7 +1,7 @@
 from flask import Blueprint
 
-image.py = Blueprint('user', __name__)
+image_bp = Blueprint('image', __name__)
 
-@user_bp.route('/test-user')
-def test_user():
-    return "User route funcionando!"
+@image_bp.route('/test-image')
+def test_image():
+    return 'Rota de image funcionando'
