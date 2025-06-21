@@ -1,0 +1,1 @@
+Deploy frontend na Hostinger: subir a pasta dist em public_html

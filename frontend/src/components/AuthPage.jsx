@@ -1,0 +1,1 @@
+// AuthPage with gradient blue dark design
