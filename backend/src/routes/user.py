@@ -1,6 +1,6 @@
 from flask import Blueprint
 
-nome_bp = Blueprint('nome', __name__)
+user_bp = Blueprint('nome', __name__)
 
 @nome_bp.route('/test-nome')
 def test_nome():
