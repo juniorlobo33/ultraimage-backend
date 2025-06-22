@@ -8,7 +8,7 @@ from src.routes.auth import auth_bp
 from src.routes.payment import payment_bp
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True)
+CORS(app, supports_credentials=True, origins=["https://ultraimageai.com"])
 
 # Rotas
 app.register_blueprint(user_bp, url_prefix='/api')
