@@ -1,3 +1,5 @@
+aiofiles
+fastapi
 Flask
 Flask-Cors
 Flask-SQLAlchemy
@@ -5,4 +7,6 @@ gunicorn
 Pillow
 requests
 replicate
+uvicorn
 python-dotenv
+python-multipart
