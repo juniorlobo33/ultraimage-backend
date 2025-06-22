@@ -4,6 +4,8 @@ from datetime import datetime
 db = SQLAlchemy()
 
 class User(db.Model):
+    __tablename__ = 'users'
+    
     id = db.Column(db.String(36), primary_key=True)  # UUID
     email = db.Column(db.String(120), unique=True, nullable=False)
     name = db.Column(db.String(100), nullable=False)
@@ -58,8 +60,10 @@ class User(db.Model):
 
 class ProcessingJob(db.Model):
     """Modelo para rastrear jobs de processamento"""
+    __tablename__ = 'processing_jobs'
+    
     id = db.Column(db.String(36), primary_key=True)  # UUID
-    user_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
     original_filename = db.Column(db.String(255), nullable=False)
     processed_filename = db.Column(db.String(255))
     status = db.Column(db.String(20), default='pending')  # pending, processing, completed, failed
