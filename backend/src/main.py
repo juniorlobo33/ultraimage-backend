@@ -10,6 +10,9 @@ from src.routes.user import user_bp
 from src.routes.image import image_bp
 from src.routes.auth import auth_bp
 from src.routes.payment import payment_bp
+from src.routes.user import user_bp
+app.register_blueprint(user_bp, url_prefix='/api')
+
 
 app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
 
