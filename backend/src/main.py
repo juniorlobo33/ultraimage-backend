@@ -1,3 +1,4 @@
+https://ultraimage-backend-production.up.railway.app/api/auth/check-auth
 from flask import Flask
 from flask_cors import CORS
 
