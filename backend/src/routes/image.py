@@ -1,133 +1,202 @@
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, current_app
+from werkzeug.utils import secure_filename
 import os
 import uuid
-from werkzeug.utils import secure_filename
-from src.services.replicate_service import ReplicateService
+from datetime import datetime
+from src.models.user import db, ProcessingJob
+from src.services.replicate_service import process_image_with_replicate
+import threading
 
 image_bp = Blueprint('image', __name__)
 
+# Configurações de upload
 UPLOAD_FOLDER = '/tmp/uploads'
-PROCESSED_FOLDER = '/tmp/processed'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
-# Criar pastas se não existirem
+# Criar pasta de upload se não existir
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-
-# Inicializar serviço Replicate
-replicate_service = ReplicateService()
 
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def get_file_size(file):
+    file.seek(0, 2)  # Ir para o final do arquivo
+    size = file.tell()
+    file.seek(0)  # Voltar para o início
+    return size
+
 @image_bp.route('/upload', methods=['POST'])
 def upload_image():
     try:
+        # Verificar se há arquivo na requisição
         if 'image' not in request.files:
-            return jsonify({'error': 'Nenhuma imagem foi enviada'}), 400
+            return jsonify({'error': 'Nenhum arquivo enviado'}), 400
         
         file = request.files['image']
         
+        # Verificar se arquivo foi selecionado
         if file.filename == '':
             return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
         
-        if file and allowed_file(file.filename):
-            # Gerar nome único para o arquivo
-            filename = secure_filename(file.filename)
-            unique_filename = f"{uuid.uuid4()}_{filename}"
-            filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
-            
-            # Salvar arquivo
-            file.save(filepath)
-            
-            return jsonify({
-                'message': 'Upload realizado com sucesso',
-                'filename': unique_filename,
-                'filepath': filepath
-            }), 200
-        else:
-            return jsonify({'error': 'Tipo de arquivo não permitido'}), 400
-            
-    except Exception as e:
-        return jsonify({'error': f'Erro no upload: {str(e)}'}), 500
-
-@image_bp.route('/process', methods=['POST'])
-def process_image():
-    try:
-        data = request.get_json()
+        # Verificar tipo de arquivo
+        if not allowed_file(file.filename):
+            return jsonify({'error': 'Tipo de arquivo não suportado. Use JPG, PNG ou WebP.'}), 400
         
-        if not data or 'filename' not in data:
-            return jsonify({'error': 'Nome do arquivo não fornecido'}), 400
+        # Verificar tamanho do arquivo
+        file_size = get_file_size(file)
+        if file_size > MAX_FILE_SIZE:
+            return jsonify({'error': 'Arquivo muito grande. Máximo 10MB.'}), 400
         
-        filename = data['filename']
-        scale = data.get('scale', 2)  # Padrão: 2x
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        # Gerar nome único para o arquivo
+        file_extension = file.filename.rsplit('.', 1)[1].lower()
+        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
         
-        if not os.path.exists(filepath):
-            return jsonify({'error': 'Arquivo não encontrado'}), 404
+        # Salvar arquivo
+        file.save(file_path)
         
-        # Processar imagem com Replicate
-        result = replicate_service.upscale_image(filepath, scale)
+        # Criar registro no banco de dados
+        job = ProcessingJob(
+            user_id=1,  # TODO: Pegar do usuário logado
+            status='uploaded',
+            input_path=file_path,
+            original_filename=file.filename,
+            file_size=file_size,
+            created_at=datetime.utcnow()
+        )
         
-        if result['success']:
-            job_id = str(uuid.uuid4())
-            
-            # Simular processamento assíncrono
-            # Em produção, você salvaria o job_id e o resultado no banco de dados
-            
-            return jsonify({
-                'message': 'Processamento iniciado',
-                'status': 'processing',
-                'job_id': job_id,
-                'scale': scale
-            }), 200
-        else:
-            return jsonify({'error': result['error']}), 500
+        db.session.add(job)
+        db.session.commit()
         
-    except Exception as e:
-        return jsonify({'error': f'Erro no processamento: {str(e)}'}), 500
-
-@image_bp.route('/status/<job_id>', methods=['GET'])
-def get_status(job_id):
-    try:
-        # Em produção, você consultaria o banco de dados pelo job_id
-        # e verificaria o status no Replicate se necessário
+        # Iniciar processamento em background
+        thread = threading.Thread(
+            target=process_image_background,
+            args=(job.id, file_path)
+        )
+        thread.daemon = True
+        thread.start()
         
-        # Simulação de status concluído
         return jsonify({
-            'job_id': job_id,
-            'status': 'completed',
-            'progress': 100,
-            'result_url': f'/api/download/{job_id}',
-            'output_url': 'https://example.com/processed_image.png'
+            'success': True,
+            'jobId': job.id,
+            'message': 'Upload realizado com sucesso. Processamento iniciado.'
         }), 200
         
     except Exception as e:
-        return jsonify({'error': f'Erro ao verificar status: {str(e)}'}), 500
+        current_app.logger.error(f"Erro no upload: {str(e)}")
+        return jsonify({'error': 'Erro interno do servidor'}), 500
 
-@image_bp.route('/download/<job_id>', methods=['GET'])
+@image_bp.route('/status/<int:job_id>', methods=['GET'])
+def get_processing_status(job_id):
+    try:
+        job = ProcessingJob.query.get(job_id)
+        
+        if not job:
+            return jsonify({'error': 'Job não encontrado'}), 404
+        
+        response_data = {
+            'jobId': job.id,
+            'status': job.status,
+            'created_at': job.created_at.isoformat() if job.created_at else None,
+            'completed_at': job.completed_at.isoformat() if job.completed_at else None
+        }
+        
+        # Se processamento concluído, incluir URL de download
+        if job.status == 'completed' and job.output_path:
+            response_data['result'] = {
+                'downloadUrl': f'/api/image/download/{job.id}',
+                'originalFilename': job.original_filename
+            }
+        
+        # Se erro, incluir mensagem
+        if job.status == 'failed' and job.error_message:
+            response_data['error'] = job.error_message
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        current_app.logger.error(f"Erro ao verificar status: {str(e)}")
+        return jsonify({'error': 'Erro interno do servidor'}), 500
+
+@image_bp.route('/download/<int:job_id>', methods=['GET'])
 def download_result(job_id):
     try:
-        # Em produção, você recuperaria o arquivo processado
-        # baseado no job_id do banco de dados
+        job = ProcessingJob.query.get(job_id)
         
-        # Simulação de download
-        return jsonify({
-            'message': 'Download simulado',
-            'job_id': job_id,
-            'download_url': f'https://example.com/download/{job_id}.png'
-        }), 200
+        if not job:
+            return jsonify({'error': 'Job não encontrado'}), 404
+        
+        if job.status != 'completed' or not job.output_path:
+            return jsonify({'error': 'Processamento não concluído'}), 400
+        
+        # Verificar se arquivo existe
+        if not os.path.exists(job.output_path):
+            return jsonify({'error': 'Arquivo não encontrado'}), 404
+        
+        # Retornar arquivo para download
+        from flask import send_file
+        return send_file(
+            job.output_path,
+            as_attachment=True,
+            download_name=f"upscaled_{job.original_filename}"
+        )
         
     except Exception as e:
-        return jsonify({'error': f'Erro no download: {str(e)}'}), 500
+        current_app.logger.error(f"Erro no download: {str(e)}")
+        return jsonify({'error': 'Erro interno do servidor'}), 500
+
+def process_image_background(job_id, input_path):
+    """Processar imagem em background usando Replicate"""
+    try:
+        # Atualizar status para processando
+        job = ProcessingJob.query.get(job_id)
+        job.status = 'processing'
+        db.session.commit()
+        
+        # Processar com Replicate
+        output_url = process_image_with_replicate(input_path)
+        
+        if output_url:
+            # Download do resultado
+            import requests
+            response = requests.get(output_url)
+            
+            if response.status_code == 200:
+                # Salvar resultado
+                output_filename = f"result_{uuid.uuid4()}.png"
+                output_path = os.path.join(UPLOAD_FOLDER, output_filename)
+                
+                with open(output_path, 'wb') as f:
+                    f.write(response.content)
+                
+                # Atualizar job como concluído
+                job.status = 'completed'
+                job.output_path = output_path
+                job.completed_at = datetime.utcnow()
+                db.session.commit()
+            else:
+                raise Exception("Erro ao baixar resultado do Replicate")
+        else:
+            raise Exception("Erro no processamento com Replicate")
+            
+    except Exception as e:
+        # Atualizar job como falhou
+        job = ProcessingJob.query.get(job_id)
+        job.status = 'failed'
+        job.error_message = str(e)
+        job.completed_at = datetime.utcnow()
+        db.session.commit()
+        
+        current_app.logger.error(f"Erro no processamento background: {str(e)}")
 
 @image_bp.route('/health', methods=['GET'])
 def health_check():
-    """Endpoint para verificar se a API está funcionando"""
+    """Endpoint para verificar se o serviço está funcionando"""
     return jsonify({
         'status': 'healthy',
-        'service': 'Image Processing API',
-        'replicate_configured': replicate_service.api_token is not None
+        'service': 'image-processing',
+        'timestamp': datetime.utcnow().isoformat()
     }), 200
 
