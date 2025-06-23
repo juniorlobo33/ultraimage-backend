@@ -5,6 +5,8 @@ import uuid
 import requests
 import replicate
 from datetime import datetime
+from PIL import Image
+import math
 
 image_bp = Blueprint('image', __name__)
 
@@ -12,6 +14,7 @@ image_bp = Blueprint('image', __name__)
 UPLOAD_FOLDER = '/tmp/uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_PIXELS = 4000000  # Limite seguro para Replicate (4 milhões de pixels)
 
 # Criar pasta de upload
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -25,7 +28,36 @@ def get_file_size(file):
     file.seek(0)
     return size
 
-# Armazenamento em memória para jobs (temporário)
+def resize_image_if_needed(image_path):
+    """Redimensiona a imagem se ela for muito grande para o Replicate"""
+    try:
+        with Image.open(image_path) as img:
+            width, height = img.size
+            total_pixels = width * height
+            
+            if total_pixels <= MAX_PIXELS:
+                return image_path  # Não precisa redimensionar
+            
+            # Calcular novo tamanho mantendo proporção
+            scale_factor = math.sqrt(MAX_PIXELS / total_pixels)
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            
+            # Redimensionar
+            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Salvar versão redimensionada
+            resized_path = image_path.replace('.', '_resized.')
+            resized_img.save(resized_path, quality=95, optimize=True)
+            
+            current_app.logger.info(f"Imagem redimensionada de {width}x{height} para {new_width}x{new_height}")
+            return resized_path
+            
+    except Exception as e:
+        current_app.logger.error(f"Erro ao redimensionar: {str(e)}")
+        return image_path  # Retorna original se der erro
+
+# Armazenamento em memória para jobs
 jobs_storage = {}
 
 @image_bp.route('/upload', methods=['POST'])
@@ -90,21 +122,27 @@ def process_with_replicate(job_id, input_path):
         if not replicate_token:
             raise Exception("Token Replicate não configurado")
         
-        # Abrir arquivo
-        with open(input_path, 'rb') as image_file:
+        # Redimensionar se necessário
+        processed_path = resize_image_if_needed(input_path)
+        
+        # Abrir arquivo processado
+        with open(processed_path, 'rb') as image_file:
+            current_app.logger.info(f"Enviando para Replicate: {processed_path}")
+            
             # Executar modelo Real-ESRGAN
             output = replicate.run(
                 "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
                 input={
                     "image": image_file,
-                    "scale": 4,  # 4x upscaling
+                    "scale": 2,  # Reduzido para 2x para evitar problemas
                     "face_enhance": False
                 }
             )
             
             if output:
                 # Baixar resultado
-                response = requests.get(output, timeout=60)
+                current_app.logger.info(f"Baixando resultado: {output}")
+                response = requests.get(output, timeout=120)
                 response.raise_for_status()
                 
                 # Salvar resultado
@@ -120,6 +158,14 @@ def process_with_replicate(job_id, input_path):
                 jobs_storage[job_id]['completed_at'] = datetime.utcnow().isoformat()
                 
                 current_app.logger.info(f"Processamento concluído para job {job_id}")
+                
+                # Limpar arquivo temporário se foi redimensionado
+                if processed_path != input_path:
+                    try:
+                        os.remove(processed_path)
+                    except:
+                        pass
+                        
             else:
                 raise Exception("Replicate retornou resultado vazio")
                 
@@ -185,7 +231,8 @@ def download_result(job_id):
 def health_check():
     return jsonify({
         'status': 'healthy',
-        'service': 'image-processing-real',
-        'replicate_configured': bool(os.environ.get('REPLICATE_API_TOKEN'))
+        'service': 'image-processing-with-resize',
+        'replicate_configured': bool(os.environ.get('REPLICATE_API_TOKEN')),
+        'max_pixels': MAX_PIXELS
     }), 200
 
