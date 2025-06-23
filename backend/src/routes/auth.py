@@ -208,7 +208,7 @@ def update_profile():
         db.session.rollback()
         return jsonify({'error': f'Erro ao atualizar perfil: {str(e)}'}), 500
 
-@auth_bp.route('/check-auth', methods=['GET'])
+@auth_bp.route('/check-auth', methods=['GET', 'POST'])
 def check_auth():
     """Verifica se o usuário está autenticado"""
     try:
