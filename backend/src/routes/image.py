@@ -11,7 +11,8 @@ import numpy as np
 image_bp = Blueprint('image', __name__)
 
 # Configurações do Replicate
-REPLICATE_MODEL = "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fdb0ef3c0669c590548137b9ed9f221"
+# VERSÃO CORRIGIDA DO MODELO
+REPLICATE_MODEL = "nightmareai/real-esrgan:f121d640bd286e1fdc67f9799164c1d5be36ff74576ee11c803ae5b665dd46aa"
 MAX_PIXELS = 4 * 1024 * 1024 # Limite de 4 milhões de pixels para o GPU
 
 @image_bp.route('/health', methods=['GET'])
