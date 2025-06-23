@@ -1,256 +1,164 @@
+import replicate
 import os
 import requests
-import replicate
-from PIL import Image
-import io
-import base64
-import uuid
-from datetime import datetime
+from flask import current_app
 
-class ReplicateService:
-    def __init__(self):
-        """Inicializar o serviço Replicate com a API key"""
-        self.api_token = os.environ.get('REPLICATE_API_TOKEN')
-        if not self.api_token:
-            raise ValueError("REPLICATE_API_TOKEN não encontrado nas variáveis de ambiente")
+def process_image_with_replicate(input_image_path):
+    """
+    Processa uma imagem usando o modelo Real-ESRGAN no Replicate
+    
+    Args:
+        input_image_path (str): Caminho para a imagem de entrada
+        
+    Returns:
+        str: URL da imagem processada ou None se houver erro
+    """
+    try:
+        # Verificar se o token está configurado
+        api_token = os.environ.get('REPLICATE_API_TOKEN')
+        if not api_token:
+            current_app.logger.error("REPLICATE_API_TOKEN não configurado")
+            return None
         
         # Configurar cliente Replicate
-        self.client = replicate.Client(api_token=self.api_token)
+        replicate_client = replicate.Client(api_token=api_token)
         
-        # Modelos disponíveis
-        self.models = {
-            'upscale': 'nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc972b6f777b83f18e0b5ee90',
-            'enhance': 'tencentarc/gfpgan:9283608cc6b7be6b65a8e44983db012355fde4132009bf99d976b2f0896856a3',
-            'colorize': 'cjwbw/bigcolor:9451bfbf652b21a9bccc741e5c7046540faa5586cfa3aa45abc7c6e5c0b5e7b5'
-        }
-    
-    def upscale_image(self, image_data, scale=2, model_type='upscale'):
-        """
-        Fazer upscale de uma imagem usando Real-ESRGAN
-        
-        Args:
-            image_data: Dados da imagem (bytes ou base64)
-            scale: Fator de escala (2, 4, 8)
-            model_type: Tipo de modelo a usar
-            
-        Returns:
-            dict: Resultado com URL da imagem processada
-        """
-        try:
-            # Converter image_data para URL ou base64 se necessário
-            if isinstance(image_data, bytes):
-                # Converter bytes para base64
-                image_b64 = base64.b64encode(image_data).decode('utf-8')
-                image_url = f"data:image/jpeg;base64,{image_b64}"
-            elif isinstance(image_data, str) and image_data.startswith('http'):
-                # Já é uma URL
-                image_url = image_data
-            else:
-                # Assumir que é base64
-                image_url = f"data:image/jpeg;base64,{image_data}"
-            
-            # Configurar parâmetros do modelo
-            model_name = self.models.get(model_type, self.models['upscale'])
-            
-            input_params = {
-                "image": image_url,
-                "scale": scale
-            }
-            
-            # Executar o modelo
-            output = self.client.run(model_name, input=input_params)
-            
-            # O output geralmente é uma URL da imagem processada
-            if isinstance(output, list) and len(output) > 0:
-                result_url = output[0]
-            elif isinstance(output, str):
-                result_url = output
-            else:
-                raise ValueError("Formato de saída inesperado do modelo")
-            
-            return {
-                'success': True,
-                'result_url': result_url,
-                'model_used': model_name,
-                'scale': scale,
-                'processed_at': datetime.utcnow().isoformat()
-            }
-            
-        except Exception as e:
-            return {
-                'success': False,
-                'error': str(e),
-                'model_used': model_name if 'model_name' in locals() else None
-            }
-    
-    def enhance_image(self, image_data):
-        """
-        Melhorar qualidade de uma imagem usando GFPGAN
-        
-        Args:
-            image_data: Dados da imagem
-            
-        Returns:
-            dict: Resultado com URL da imagem processada
-        """
-        return self.upscale_image(image_data, scale=1, model_type='enhance')
-    
-    def colorize_image(self, image_data):
-        """
-        Colorir uma imagem em preto e branco
-        
-        Args:
-            image_data: Dados da imagem
-            
-        Returns:
-            dict: Resultado com URL da imagem processada
-        """
-        try:
-            # Converter image_data para URL se necessário
-            if isinstance(image_data, bytes):
-                image_b64 = base64.b64encode(image_data).decode('utf-8')
-                image_url = f"data:image/jpeg;base64,{image_b64}"
-            elif isinstance(image_data, str) and image_data.startswith('http'):
-                image_url = image_data
-            else:
-                image_url = f"data:image/jpeg;base64,{image_data}"
-            
-            model_name = self.models['colorize']
-            
-            input_params = {
-                "image": image_url
-            }
-            
-            output = self.client.run(model_name, input=input_params)
-            
-            if isinstance(output, list) and len(output) > 0:
-                result_url = output[0]
-            elif isinstance(output, str):
-                result_url = output
-            else:
-                raise ValueError("Formato de saída inesperado do modelo")
-            
-            return {
-                'success': True,
-                'result_url': result_url,
-                'model_used': model_name,
-                'processed_at': datetime.utcnow().isoformat()
-            }
-            
-        except Exception as e:
-            return {
-                'success': False,
-                'error': str(e)
-            }
-    
-    def download_result_image(self, result_url):
-        """
-        Baixar imagem processada da URL de resultado
-        
-        Args:
-            result_url: URL da imagem processada
-            
-        Returns:
-            bytes: Dados da imagem baixada
-        """
-        try:
-            response = requests.get(result_url, timeout=30)
-            response.raise_for_status()
-            return response.content
-            
-        except Exception as e:
-            raise Exception(f"Erro ao baixar imagem: {str(e)}")
-    
-    def validate_image(self, image_data, max_size_mb=10):
-        """
-        Validar se a imagem está dentro dos limites aceitos
-        
-        Args:
-            image_data: Dados da imagem
-            max_size_mb: Tamanho máximo em MB
-            
-        Returns:
-            dict: Resultado da validação
-        """
-        try:
-            # Verificar tamanho
-            if isinstance(image_data, bytes):
-                size_mb = len(image_data) / (1024 * 1024)
-            else:
-                # Para base64, estimar tamanho
-                size_mb = len(image_data) * 0.75 / (1024 * 1024)
-            
-            if size_mb > max_size_mb:
-                return {
-                    'valid': False,
-                    'error': f'Imagem muito grande: {size_mb:.2f}MB (máximo: {max_size_mb}MB)'
+        # Abrir e ler a imagem
+        with open(input_image_path, 'rb') as image_file:
+            # Executar o modelo Real-ESRGAN
+            output = replicate_client.run(
+                "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
+                input={
+                    "image": image_file,
+                    "scale": 4,  # Fator de escala (2x, 4x, 8x)
+                    "face_enhance": False  # Melhoramento específico para rostos
                 }
+            )
             
-            # Verificar se é uma imagem válida
-            if isinstance(image_data, bytes):
-                try:
-                    img = Image.open(io.BytesIO(image_data))
-                    img.verify()
-                except Exception:
-                    return {
-                        'valid': False,
-                        'error': 'Formato de imagem inválido'
-                    }
-            
-            return {
-                'valid': True,
-                'size_mb': size_mb
-            }
-            
-        except Exception as e:
-            return {
-                'valid': False,
-                'error': f'Erro na validação: {str(e)}'
-            }
+            # O output é uma URL da imagem processada
+            if output:
+                current_app.logger.info(f"Processamento concluído: {output}")
+                return output
+            else:
+                current_app.logger.error("Replicate retornou output vazio")
+                return None
+                
+    except Exception as e:
+        current_app.logger.error(f"Erro no processamento Replicate: {str(e)}")
+        return None
+
+def process_image_async(input_image_path):
+    """
+    Inicia processamento assíncrono no Replicate
     
-    def get_available_models(self):
-        """
-        Retornar lista de modelos disponíveis
+    Args:
+        input_image_path (str): Caminho para a imagem de entrada
         
-        Returns:
-            dict: Modelos disponíveis
-        """
+    Returns:
+        str: ID da predição para monitoramento ou None se houver erro
+    """
+    try:
+        # Verificar se o token está configurado
+        api_token = os.environ.get('REPLICATE_API_TOKEN')
+        if not api_token:
+            current_app.logger.error("REPLICATE_API_TOKEN não configurado")
+            return None
+        
+        # Configurar cliente Replicate
+        replicate_client = replicate.Client(api_token=api_token)
+        
+        # Abrir e ler a imagem
+        with open(input_image_path, 'rb') as image_file:
+            # Criar predição assíncrona
+            prediction = replicate_client.predictions.create(
+                version="42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
+                input={
+                    "image": image_file,
+                    "scale": 4,
+                    "face_enhance": False
+                }
+            )
+            
+            current_app.logger.info(f"Predição criada: {prediction.id}")
+            return prediction.id
+                
+    except Exception as e:
+        current_app.logger.error(f"Erro ao criar predição: {str(e)}")
+        return None
+
+def get_prediction_status(prediction_id):
+    """
+    Verifica o status de uma predição
+    
+    Args:
+        prediction_id (str): ID da predição
+        
+    Returns:
+        dict: Status e resultado da predição
+    """
+    try:
+        api_token = os.environ.get('REPLICATE_API_TOKEN')
+        if not api_token:
+            return {'status': 'error', 'error': 'Token não configurado'}
+        
+        replicate_client = replicate.Client(api_token=api_token)
+        prediction = replicate_client.predictions.get(prediction_id)
+        
         return {
-            'models': self.models,
-            'descriptions': {
-                'upscale': 'Aumentar resolução da imagem (Real-ESRGAN)',
-                'enhance': 'Melhorar qualidade facial (GFPGAN)',
-                'colorize': 'Colorir imagem em preto e branco'
-            }
+            'status': prediction.status,
+            'output': prediction.output,
+            'error': prediction.error
         }
-    
-    def health_check(self):
-        """
-        Verificar se o serviço está funcionando
         
-        Returns:
-            dict: Status do serviço
-        """
-        try:
-            # Verificar se a API key está configurada
-            if not self.api_token:
-                return {
-                    'healthy': False,
-                    'error': 'API token não configurado'
-                }
-            
-            # Verificar se consegue acessar a API (teste simples)
-            # Em produção, você pode fazer uma chamada de teste real
-            
-            return {
-                'healthy': True,
-                'api_configured': True,
-                'models_available': len(self.models)
-            }
-            
-        except Exception as e:
-            return {
-                'healthy': False,
-                'error': str(e)
-            }
+    except Exception as e:
+        current_app.logger.error(f"Erro ao verificar predição: {str(e)}")
+        return {'status': 'error', 'error': str(e)}
+
+def download_image(url, output_path):
+    """
+    Baixa uma imagem de uma URL
+    
+    Args:
+        url (str): URL da imagem
+        output_path (str): Caminho onde salvar a imagem
+        
+    Returns:
+        bool: True se sucesso, False se erro
+    """
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        with open(output_path, 'wb') as f:
+            f.write(response.content)
+        
+        current_app.logger.info(f"Imagem baixada: {output_path}")
+        return True
+        
+    except Exception as e:
+        current_app.logger.error(f"Erro ao baixar imagem: {str(e)}")
+        return False
+
+def health_check():
+    """
+    Verifica se o serviço Replicate está acessível
+    
+    Returns:
+        dict: Status do serviço
+    """
+    try:
+        api_token = os.environ.get('REPLICATE_API_TOKEN')
+        if not api_token:
+            return {'status': 'error', 'message': 'Token não configurado'}
+        
+        # Tentar listar modelos para verificar conectividade
+        replicate_client = replicate.Client(api_token=api_token)
+        
+        # Fazer uma requisição simples para testar
+        models = list(replicate_client.models.list()[:1])
+        
+        return {'status': 'healthy', 'message': 'Replicate acessível'}
+        
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
 
