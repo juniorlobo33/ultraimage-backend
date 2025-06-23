@@ -14,7 +14,7 @@ image_bp = Blueprint('image', __name__)
 UPLOAD_FOLDER = '/tmp/uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-MAX_PIXELS = 4000000  # Limite seguro para Replicate (4 milhões de pixels)
+MAX_PIXELS = 4000000  # Limite seguro para Replicate
 
 # Criar pasta de upload
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -36,17 +36,13 @@ def resize_image_if_needed(image_path):
             total_pixels = width * height
             
             if total_pixels <= MAX_PIXELS:
-                return image_path  # Não precisa redimensionar
+                return image_path
             
-            # Calcular novo tamanho mantendo proporção
             scale_factor = math.sqrt(MAX_PIXELS / total_pixels)
             new_width = int(width * scale_factor)
             new_height = int(height * scale_factor)
             
-            # Redimensionar
             resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Salvar versão redimensionada
             resized_path = image_path.replace('.', '_resized.')
             resized_img.save(resized_path, quality=95, optimize=True)
             
@@ -55,7 +51,7 @@ def resize_image_if_needed(image_path):
             
     except Exception as e:
         current_app.logger.error(f"Erro ao redimensionar: {str(e)}")
-        return image_path  # Retorna original se der erro
+        return image_path
 
 # Armazenamento em memória para jobs
 jobs_storage = {}
@@ -98,7 +94,7 @@ def upload_image():
         
         # Processar com Replicate em background
         try:
-            process_with_replicate(job_id, file_path)
+            process_with_replicate_advanced(job_id, file_path)
         except Exception as e:
             current_app.logger.error(f"Erro no processamento: {str(e)}")
             jobs_storage[job_id]['status'] = 'failed'
@@ -107,15 +103,15 @@ def upload_image():
         return jsonify({
             'success': True,
             'jobId': job_id,
-            'message': 'Upload realizado! Processando com IA...'
+            'message': 'Upload realizado! Processando com IA avançada...'
         }), 200
         
     except Exception as e:
         current_app.logger.error(f"Erro no upload: {str(e)}")
         return jsonify({'error': f'Erro no upload: {str(e)}'}), 500
 
-def process_with_replicate(job_id, input_path):
-    """Processar imagem com Replicate"""
+def process_with_replicate_advanced(job_id, input_path):
+    """Processar imagem com Replicate usando configurações avançadas"""
     try:
         # Configurar Replicate
         replicate_token = os.environ.get('REPLICATE_API_TOKEN')
@@ -127,26 +123,28 @@ def process_with_replicate(job_id, input_path):
         
         # Abrir arquivo processado
         with open(processed_path, 'rb') as image_file:
-            current_app.logger.info(f"Enviando para Replicate: {processed_path}")
+            current_app.logger.info(f"Enviando para Replicate com configurações avançadas: {processed_path}")
             
-            # Executar modelo Real-ESRGAN
+            # Executar modelo CodeFormer com configurações otimizadas
             output = replicate.run(
-                "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
+                "sczhou/codeformer:7de2b26c089dea26c9d4b5b5b9c3e8b8b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5",
                 input={
                     "image": image_file,
-                    "scale": 2,  # Reduzido para 2x para evitar problemas
-                    "face_enhance": False
+                    "codeformer_fidelity": 0.7,  # Boa qualidade (0.5 = padrão)
+                    "background_enhance": True,   # Melhorar fundo
+                    "face_upsample": True,       # Melhorar rostos
+                    "upscale": 2                 # Escala 2x
                 }
             )
             
             if output:
                 # Baixar resultado
                 current_app.logger.info(f"Baixando resultado: {output}")
-                response = requests.get(output, timeout=120)
+                response = requests.get(output, timeout=180)  # Timeout maior
                 response.raise_for_status()
                 
                 # Salvar resultado
-                output_filename = f"upscaled_{uuid.uuid4()}.png"
+                output_filename = f"enhanced_{uuid.uuid4()}.png"
                 output_path = os.path.join(UPLOAD_FOLDER, output_filename)
                 
                 with open(output_path, 'wb') as f:
@@ -156,8 +154,14 @@ def process_with_replicate(job_id, input_path):
                 jobs_storage[job_id]['status'] = 'completed'
                 jobs_storage[job_id]['output_path'] = output_path
                 jobs_storage[job_id]['completed_at'] = datetime.utcnow().isoformat()
+                jobs_storage[job_id]['enhancement_settings'] = {
+                    'codeformer_fidelity': 0.7,
+                    'background_enhance': True,
+                    'face_upsample': True,
+                    'upscale': 2
+                }
                 
-                current_app.logger.info(f"Processamento concluído para job {job_id}")
+                current_app.logger.info(f"Processamento avançado concluído para job {job_id}")
                 
                 # Limpar arquivo temporário se foi redimensionado
                 if processed_path != input_path:
@@ -191,7 +195,8 @@ def get_processing_status(job_id):
         if job['status'] == 'completed' and job.get('output_path'):
             response_data['result'] = {
                 'downloadUrl': f'/api/image/download/{job_id}',
-                'originalFilename': job['original_filename']
+                'originalFilename': job['original_filename'],
+                'enhancementSettings': job.get('enhancement_settings', {})
             }
         elif job['status'] == 'failed':
             response_data['error'] = job.get('error', 'Erro desconhecido')
@@ -220,7 +225,7 @@ def download_result(job_id):
         return send_file(
             output_path,
             as_attachment=True,
-            download_name=f"upscaled_{job['original_filename']}"
+            download_name=f"enhanced_{job['original_filename']}"
         )
         
     except Exception as e:
@@ -231,8 +236,13 @@ def download_result(job_id):
 def health_check():
     return jsonify({
         'status': 'healthy',
-        'service': 'image-processing-with-resize',
+        'service': 'image-processing-advanced',
         'replicate_configured': bool(os.environ.get('REPLICATE_API_TOKEN')),
-        'max_pixels': MAX_PIXELS
+        'features': {
+            'codeformer_fidelity': 'Controle de qualidade vs fidelidade',
+            'background_enhance': 'Melhoria de fundo',
+            'face_upsample': 'Melhoria de rostos',
+            'upscale': 'Escala de ampliação'
+        }
     }), 200
 
