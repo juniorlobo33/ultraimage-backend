@@ -11,3 +11,4 @@ uvicorn
 python-dotenv
 python-multipart
 psycopg2-binary==2.9.7
+replicate==0.15.4
