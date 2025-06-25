@@ -6,18 +6,18 @@ from flask import Blueprint, request, jsonify, send_file
 from PIL import Image
 import replicate
 import tempfile
-import numpy as np
+import numpy as np # Certifique-se de que numpy está importado
+import requests # <--- IMPORTANTE: GARANTA QUE ESTA LINHA ESTÁ AQUI NO TOPO!
 
 image_bp = Blueprint('image', __name__)
 
 # Configurações do Replicate
-# VERSÃO CORRIGIDA DO MODELO
-REPLICATE_MODEL = "nightmareai/real-esrgan:f121d640bd286e1fdc67f9799164c1d5be36ff74576ee11c803ae5b665dd46aa"
-MAX_PIXELS = 4 * 1024 * 1024 # Limite de 4 milhões de pixels para o GPU
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 
-@image_bp.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"service": "image-processing", "status": "healthy", "timestamp": time.time()})
+# Definir um limite máximo de pixels para evitar erros de memória na GPU do Replicate
+# O limite de 2096784 pixels é para o modelo Real-ESRGAN.
+MAX_PIXELS = 2000000 # Um pouco abaixo do limite para ter margem de segurança
 
 @image_bp.route('/upload', methods=['POST'])
 def upload_image():
@@ -28,92 +28,75 @@ def upload_image():
     if file.filename == '':
         return jsonify({"error": "Nenhum arquivo selecionado"}), 400
 
-    if file:
-        try:
-            # Ler a imagem
-            img = Image.open(io.BytesIO(file.read()))
-            original_format = img.format
+    try:
+        # Ler a imagem e converter para RGB
+        img = Image.open(io.BytesIO(file.read())).convert("RGB")
+        original_width, original_height = img.size
+        print(f"Dimensões originais da imagem: {original_width}x{original_height} pixels")
 
-            # Obter parâmetros do frontend
-            scale = int(request.form.get('scale', 2)) # Padrão 2x
-            face_enhance = request.form.get('face_enhance', 'false').lower() == 'true'
+        # Redimensionar se exceder o MAX_PIXELS
+        if original_width * original_height > MAX_PIXELS:
+            ratio = (MAX_PIXELS / (original_width * original_height))**0.5
+            new_width = int(original_width * ratio)
+            new_height = int(original_height * ratio)
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+            print(f"Imagem redimensionada para: {new_width}x{new_height} pixels (total: {new_width * new_height} pixels)")
+        else:
+            print(f"Imagem dentro do limite de pixels. Total: {original_width * original_height} pixels")
 
-            # Redimensionar se a imagem for muito grande
-            width, height = img.size
-            current_pixels = width * height
-            if current_pixels > MAX_PIXELS:
-                ratio = (MAX_PIXELS / current_pixels)**0.5
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                img = img.resize((new_width, new_height), Image.LANCZOS)
-                print(f"Imagem redimensionada de {width}x{height} para {new_width}x{new_height}")
+        # Salvar a imagem redimensionada em um buffer para enviar ao Replicate
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
 
-            # Converter para RGB se necessário (Replicate prefere RGB)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+        # Parâmetros de regulagem do frontend
+        scale = request.form.get('scale', type=int, default=2)
+        face_enhance = request.form.get('face_enhance', type=bool, default=False)
 
-            # Salvar imagem temporariamente para o Replicate
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{original_format.lower()}") as temp_input_file:
-                img.save(temp_input_file.name, format=original_format)
-                temp_input_file_path = temp_input_file.name
+        print(f"Parâmetros recebidos do frontend: scale={scale}, face_enhance={face_enhance}")
 
-            print(f"Iniciando processamento Replicate para {temp_input_file_path} com scale={scale}, face_enhance={face_enhance}")
+        # Salvar temporariamente a imagem para o Replicate
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img_file:
+            temp_img_file.write(img_byte_arr)
+            temp_img_path = temp_img_file.name
 
-            # Chamar o modelo Replicate
-            output_url = replicate.run(
-                REPLICATE_MODEL,
-                input={
-                    "image": open(temp_input_file_path, "rb"),
-                    "scale": scale,
-                    "face_enhance": face_enhance
-                }
-            )
-            print(f"Processamento Replicate concluído. Output URL: {output_url}")
+        print(f"Imagem temporária criada em: {temp_img_path}")
 
-            # Baixar a imagem processada
-            import requests
-            response = requests.get(output_url)
-            response.raise_for_status() # Levanta um erro para status HTTP ruins
+        # Chamar a API do Replicate
+        print("Iniciando processamento Replicate...")
+        output = replicate.run(
+            "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fdb0ef3c0669c590548134787689c5299b",
+            input={
+                "image": open(temp_img_path, "rb"),
+                "scale": scale,
+                "face_enhance": face_enhance,
+            }
+        )
+        output_url = output
 
-            # Salvar a imagem processada temporariamente
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{original_format.lower()}") as temp_output_file:
-                temp_output_file.write(response.content)
-                temp_output_file_path = temp_output_file.name
+        print(f"Processamento Replicate concluído. Output URL: {output_url}")
 
-            # Ler a imagem processada para base64
-            with open(temp_output_file_path, "rb") as f:
-                encoded_image = base64.b64encode(f.read()).decode('utf-8')
+        # Remover o arquivo temporário
+        os.unlink(temp_img_path)
 
-            # Limpar arquivos temporários
-            os.unlink(temp_input_file_path)
-            os.unlink(temp_output_file_path)
+        # Baixar a imagem processada
+        response = requests.get(output_url)
+        response.raise_for_status() # Levanta um erro para status HTTP ruins (4xx ou 5xx)
 
-            return jsonify({
-                "message": "Upload e processamento concluídos!",
-                "processed_image": encoded_image,
-                "jobId": "processed_image_id" # ID simulado
-            }), 200
+        # Retornar a imagem como base64
+        encoded_image = base64.b64encode(response.content).decode('utf-8')
+        return jsonify({"image": encoded_image})
 
-        except replicate.exceptions.ReplicateError as e:
-            print(f"Erro do Replicate: {e}")
-            return jsonify({"error": f"Erro no processamento Replicate: {e}"}), 500
-        except requests.exceptions.RequestException as e:
-            print(f"Erro ao baixar imagem do Replicate: {e}")
-            return jsonify({"error": f"Erro ao baixar imagem processada: {e}"}), 500
-        except Exception as e:
-            print(f"Erro interno no servidor: {e}")
-            return jsonify({"error": f"Erro interno no servidor: {e}"}), 500
-
-    return jsonify({"error": "Erro desconhecido"}), 500
-
-@image_bp.route('/status/<job_id>', methods=['GET'])
-def get_status(job_id):
-    # Como o processamento é síncrono, sempre retorna 'completed'
-    return jsonify({"status": "completed", "jobId": job_id}), 200
-
-@image_bp.route('/download/<job_id>', methods=['GET'])
-def download_image(job_id):
-    # Esta rota não será usada diretamente pelo frontend com o fluxo atual
-    # O frontend recebe a imagem base64 diretamente no upload
-    return jsonify({"error": "Download direto não suportado para este fluxo"}), 400
+    except replicate.exceptions.ModelError as e:
+        print(f"Erro do Replicate (ModelError): {e}")
+        # Captura o erro específico de modelo do Replicate
+        return jsonify({"error": f"Erro no processamento da imagem: {e}. Por favor, tente com uma imagem menor ou de menor resolução."}), 400
+    except requests.exceptions.RequestException as e:
+        print(f"Erro de requisição HTTP: {e}")
+        # Captura erros de rede ou HTTP ao baixar a imagem do Replicate
+        return jsonify({"error": f"Erro ao baixar a imagem processada: {e}"}), 500
+    except Exception as e:
+        print(f"Erro inesperado no upload: {e}")
+        # Captura qualquer outro erro inesperado
+        return jsonify({"error": f"Ocorreu um erro inesperado: {e}"}), 500
 
