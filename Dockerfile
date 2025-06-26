@@ -1,14 +1,19 @@
 FROM python:3.12-slim
 
-WORKDIR /app/backend  # <--- MUDANÇA AQUI: Define o diretório de trabalho dentro da pasta 'backend'
+# Define o diretório de trabalho
+WORKDIR /app
 
-COPY backend .         # <--- MUDANÇA AQUI: Copia o conteúdo da pasta 'backend' para o WORKDIR
+# Copia os arquivos do backend
+COPY backend/ .
 
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# Instala as dependências
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
+# Expõe a porta
 EXPOSE 8000
 
-# O comando CMD agora assume que está dentro de /app/backend
-# Então, o caminho para main.py é src/main.py
-CMD ["gunicorn", "src.main:app", "--bind", "0.0.0.0:${PORT}"]
+# Comando para iniciar o aplicativo
+# O Railway usa a variável PORT automaticamente
+CMD python migrate_db.py && python main.py
+
